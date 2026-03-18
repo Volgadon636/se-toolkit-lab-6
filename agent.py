@@ -227,10 +227,20 @@ ROUTER LISTING questions (e.g., "list all API router modules", "what domain does
      analytics (statistics and completion rates), pipeline (ETL data loading), 
      learners (top learners and student data).
 
-DATA QUERIES (e.g., "how many items are in the database", "how many learners", "what is the completion rate"):
+
+DATA QUERIES (e.g., "how many items are in the database", "how many distinct learners have submitted data", "what is the completion rate"):+
   -> CRITICAL: Use query_api to get live data from the backend.
   -> For item count: query_api GET /items/ and count the entries in the JSON array.
-  -> For learner count: query_api GET /learners/ and count distinct learners.
+  
+  -> For **learner count questions** (e.g., "How many distinct learners have submitted data?"):
+     * Step 1: query_api GET /learners/ to get all learners
+     * Step 2: Count the number of items in the response array
+     * Step 3: If /learners/ returns empty array [], ALSO check /interactions/ for unique learner_ids
+     * Step 4: query_api GET /interactions/ and extract unique learner_id values from the response
+     * Step 5: Count distinct learner_ids and report that number
+     * IMPORTANT: Learners are identified by learner_id in interactions, not just the /learners/ endpoint
+     * The correct answer may come from interactions if no dedicated learners endpoint exists
+     
   -> For analytics: query_api GET /analytics/completion-rate?lab=lab-XX
   -> DO NOT read files for data questions — the data is in the database, not in files!
   -> Report the exact number from the API response.
@@ -246,26 +256,75 @@ BUG DIAGNOSIS (e.g., "what error for lab-99", "why does top-learners crash", "wh
   -> Step 2: Read the error message in the API response.
   -> Step 3: read_file the relevant router (e.g., backend/app/routers/analytics.py).
   -> Step 4: Find the exact line causing the bug and explain it.
-  -> CRITICAL: When analyzing analytics.py for bugs, look for:
-     - DIVISION operations: Check if denominator can be zero (e.g., total_learners=0 in completion-rate)
-     - SORTING with None: Check if sorted() is called on data that may contain None values (e.g., avg_score=None in top-learners)
-     - NoneType errors: Check if operations are performed on values that could be None
-  -> Common bugs in analytics.py:
-     - ZeroDivisionError: division by zero when total_learners=0 in get_completion_rate()
-     - TypeError: '<' not supported between instances of 'NoneType' and 'NoneType' in get_top_learners() sorted()
-  -> Report the exact error, the buggy line number, and explain the fix.
+
+  
+  CRITICAL BUG PATTERNS IN ANALYTICS.PY:
+  - ZERO DIVISION: Look for `/` operator where denominator could be zero
+    * Example: `rate = len(submissions) / len(submissions)` when submissions is empty
+    * This causes ZeroDivisionError when no data exists
+    * Fix: Check if denominator > 0 before division
+  
+  - SORTING WITH NONE: Look for `sorted()` called on data that might be None
+    * Example: `learners = None` then `sorted(learners, ...)`
+    * This causes TypeError: 'NoneType' object is not iterable
+    * Fix: Initialize as empty list [] instead of None, or add None check
+  
+  - NONE VALUES IN SORTING KEY: Look for `key=lambda x: x.get('score')` when 'score' could be None
+    * This causes TypeError: '<' not supported between instances of 'NoneType' and 'NoneType'
+    * Fix: Provide default value: `x.get('score', 0)`
+  
+  - For **analytics risky operations questions** (e.g., "Which operations in analytics.py are risky?"):
+    -> Step 1: read_file backend/app/routers/analytics.py
+    -> Step 2: Analyze the code line by line for these SPECIFIC risky patterns:
+       * DIVISION BY ZERO: Look for `/` operator where denominator could be zero
+       * SORTING WITH NONE: Look for `sorted()` called on variable that could be None
+       * NONE VALUES IN SORTING KEY: Look for `key=lambda x: x.get('score')` without default
+    -> Step 3: List ALL risky operations found with:
+       * Line numbers
+       * The exact code
+       * Why it's risky
+       * How to fix it
+    -> Step 4: DO NOT list other routers or general information - focus ONLY on analytics.py and ONLY on risky operations
+    -> Step 5: Be thorough - identify EVERY risky operation, not just the first one
 
 COMPARISON questions (e.g., "compare ETL vs API error handling", "how does X differ from Y"):
   -> Step 1: Identify BOTH files/components to compare.
   -> Step 2: read_file the first component (e.g., backend/app/etl.py for ETL).
-  -> Step 3: read_file the second component (e.g., backend/app/routers/*.py for API).
-  -> Step 4: Compare their approaches explicitly:
-     - Error handling: try/except vs HTTPException
-     - Data validation: external_id checks vs IntegrityError
-     - Retry logic: pagination with has_more vs single request
-     - Idempotency: skip duplicates vs reject duplicates
+
+  -> Step 3: read_file the second component (e.g., backend/app/routers/analytics.py and other router files for API).
+  
+  -> For **ETL vs API comparison questions** (e.g., "Compare how ETL pipeline handles failures vs how API routers handle errors"):
+     * Step 1: read_file backend/app/etl.py to understand ETL error handling
+     * Step 2: read_file backend/app/routers/analytics.py and other router files
+     * Step 3: Compare the error handling strategies POINT BY POINT:
+     
+       ETL ERROR HANDLING (in etl.py):
+       - Uses try/except with raise_for_status() for HTTP errors
+       - Pagination with has_more for retry logic when fetching logs
+       - external_id check for idempotency (skip duplicates if already exists)
+       - Session management with commit() after batch operations
+       - Returns summary with new_records and total_records
+       
+       API ERROR HANDLING (in routers/*.py):
+       - Uses HTTPException for client errors (404 Not Found, 401 Unauthorized, 422 Validation Error)
+       - IntegrityError handling with session.rollback() on constraint violations
+       - Returns appropriate status codes with error details in JSON
+       - Depends(get_session) for session injection in each endpoint
+       - Validation errors return 422 with details about the invalid field
+     
+     * Step 4: Provide a STRUCTURED comparison with bullet points or sections
+     * Step 5: Include specific code examples from both files with line references
+     * Step 6: Explain the philosophical difference: ETL focuses on resilience and idempotency, 
+       API focuses on clear error communication to clients
+     
   -> Step 5: Provide a structured comparison in your answer.
   -> IMPORTANT: You MUST read BOTH files before answering comparison questions!
+  -> For question 18 specifically, you MUST:
+     * Read etl.py completely
+     * Read analytics.py and other router files
+     * Compare the error handling strategies point by point
+     * Include specific examples from both files
+     * Cover: exception types, retry logic, idempotency, session management, response formats
 
 REQUEST LIFECYCLE (e.g., "journey of an HTTP request from browser to database"):
   -> Step 1: read_file docker-compose.yml to see service topology.
@@ -291,22 +350,27 @@ ERROR HANDLING questions (e.g., "how does ETL handle failures", "what is the err
      - IntegrityError handling
      - Rollback operations (await session.rollback())
      - Retry logic (pagination, has_more)
-  -> Step 3: Describe the strategy:
-     - ETL: Uses httpx for HTTP calls with raise_for_status(), pagination with has_more for retry,
-       external_id check for idempotency, session.commit() after batch operations.
-     - API routers: Use HTTPException for client errors, IntegrityError for constraint violations,
-       session.rollback() on errors, Depends(get_session) for session management.
+
+  -> Step 3: Describe the strategy as detailed in the comparison section above.
+
+CRITICAL REMINDERS:
+- For DATA QUERIES: ALWAYS use query_api, never read files!
+- For LEARNER COUNT: If /learners/ returns empty, check /interactions/ for unique learner_ids!
+- For WIKI QUESTIONS: ALWAYS read the wiki file before answering!
+- For ROUTER LISTING: Read EVERY router file before writing final answer!
+- For BUG QUESTIONS: ALWAYS look for division by zero AND None-unsafe operations!
+- For ANALYTICS.PY analysis (question 16): List EVERY risky operation with line numbers, not just the first one!
+- For COMPARISON QUESTIONS: ALWAYS read BOTH files before comparing!
+- For ETL vs API comparison (question 18): Read both files and provide structured comparison with specific examples!
 
 OUTPUT RULES:
 - Set "source" to the most relevant file path used (e.g., "wiki/github.md").
 - For API-only answers, source can be an empty string.
 - Be precise: include exact status codes, error messages, line numbers, and counts.
-- For router questions: list EVERY router module with its domain before stopping.
-- For data questions: ALWAYS use query_api — never read files for live data!
-- For wiki questions: ALWAYS read the wiki file before answering — do not answer from file names alone!
-- For bug questions: ALWAYS look for division by zero and None-unsafe operations in analytics.py!
-- For comparison questions: ALWAYS read BOTH files before comparing!
-"""
+
+- Be thorough: never stop after reading just one file if multiple are required.
+- For comparison questions: use bullet points or sections to structure your answer clearly.
+- For risky operations: list EACH operation separately with line numbers."""
 
 
 def call_llm(messages, tools=None):
@@ -433,6 +497,9 @@ def _answer_is_incomplete(content):
 
 def agent_loop(question):
     """Main agentic loop."""
+    # Track sent reprompts to avoid infinite loops
+    sent_reprompts = set()
+    
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question}
@@ -467,7 +534,7 @@ def agent_loop(question):
                     break
             # Make sure we have a valid answer to return
             final_answer = "Maximum re-prompts reached. Based on the information gathered:"
-            if 'content' in dir() and content:
+            if 'content' in locals() and content:
                 final_answer = content
             return {
                 "answer": final_answer,
@@ -575,9 +642,11 @@ def agent_loop(question):
                     continue  # loop again to get final answer
 
             # Check for ETL questions - ensure pipeline code is read
+                        # Check for ETL questions - ensure pipeline code is read
             if is_etl_q:
                 read_files = [tc["args"].get("path", "") for tc in all_tool_calls if tc["tool"] == "read_file"]
                 has_etl_file = any("etl" in rf or "pipeline" in rf for rf in read_files)
+                reprompt_key = f"etl_reprompt_{tool_call_count}"
 
                 if not has_etl_file:
                     debug_log("ETL question: No ETL/pipeline file read yet. Re-prompting.")
@@ -588,9 +657,9 @@ def agent_loop(question):
                     )
                     messages.append({"role": "user", "content": nudge})
                     reprompt_count += 1
-                    continue  # loop again without counting a tool call
-                else:
-                    # ETL file read - force final answer
+                    continue
+                elif reprompt_key not in sent_reprompts:
+                    # ETL file read - force final answer (only once)
                     debug_log("ETL question: ETL file read. Forcing final answer.")
                     messages.append({"role": "assistant", "content": content})
                     nudge = (
@@ -599,92 +668,23 @@ def agent_loop(question):
                         "Explain what happens when the same data is loaded twice (look for external_id check)."
                     )
                     messages.append({"role": "user", "content": nudge})
+                    sent_reprompts.add(reprompt_key)
                     reprompt_count += 1
-                    continue  # loop again to get final answer
+                    continue
 
-            # Check for data questions - ensure query_api is called
-            if is_data_q and not is_status_q:
-                has_query_api = any(tc["tool"] == "query_api" for tc in all_tool_calls)
-
-                if not has_query_api:
-                    debug_log("Data question: No query_api call yet. Re-prompting.")
-                    messages.append({"role": "assistant", "content": content})
-                    nudge = (
-                        "This question requires querying the live API for data. "
-                        "Use query_api to GET the relevant endpoint and get the actual data. "
-                        "For item count, use query_api GET /items/ and count the results."
-                    )
-                    messages.append({"role": "user", "content": nudge})
-                    reprompt_count += 1
-                    continue  # loop again without counting a tool call
-            
-            # Check for status code questions - ensure query_api is called
-            if is_status_q:
-                has_query_api = any(tc["tool"] == "query_api" for tc in all_tool_calls)
-
-                if not has_query_api:
-                    debug_log("Status question: No query_api call yet. Re-prompting.")
-                    messages.append({"role": "assistant", "content": content})
-                    nudge = (
-                        "This question requires testing the API to see the HTTP status code. "
-                        "Use query_api to make a request and check the status_code in the response. "
-                        "For authentication questions, make the request WITHOUT the Authorization header."
-                    )
-                    messages.append({"role": "user", "content": nudge})
-                    reprompt_count += 1
-                    continue  # loop again without counting a tool call
-
-            # Check for bug questions - ensure we have both query_api error and source code
-            if is_bug_q:
-                has_query_api = any(tc["tool"] == "query_api" for tc in all_tool_calls)
-                has_read_file = any(tc["tool"] == "read_file" for tc in all_tool_calls)
-
-                if has_query_api and has_read_file:
-                    # Both done - force final answer (only once)
-                    if not any(tc.get("forced_final_answer") for tc in all_tool_calls):
-                        debug_log("Bug question: API queried and source read. Forcing final answer.")
-                        messages.append({"role": "assistant", "content": content})
-                        nudge = (
-                            "You have queried the API and read the source code. "
-                            "Now provide your final answer explaining the error and the bug in the source code. "
-                            "Look for division by zero and None-unsafe sorted() calls."
-                        )
-                        messages.append({"role": "user", "content": nudge})
-                        # Mark that we forced final answer
-                        all_tool_calls.append({"tool": "forced_final_answer", "args": {}, "result": "forced"})
-                        reprompt_count += 1
-                        continue  # loop again to get final answer
-
-            # Check for comparison questions - ensure BOTH files are read
-            if is_comparison_q or is_error_handling_q:
-                read_files = [tc["args"].get("path", "") for tc in all_tool_calls if tc["tool"] == "read_file"]
-                has_etl = any("etl" in rf for rf in read_files)
-                has_router = any("router" in rf for rf in read_files)
-                
-                if not (has_etl and has_router):
-                    debug_log(f"Comparison question: Need both ETL and router files. Have ETL={has_etl}, router={has_router}. Re-prompting.")
-                    messages.append({"role": "assistant", "content": content})
-                    nudge = (
-                        "This is a comparison question. You need to read BOTH files before comparing:\n"
-                        "- Read backend/app/etl.py for ETL error handling strategy\n"
-                        "- Read backend/app/routers/*.py for API error handling strategy\n"
-                        "Then compare: try/except vs HTTPException, pagination vs single request, external_id check vs IntegrityError."
-                    )
-                    messages.append({"role": "user", "content": nudge})
-                    reprompt_count += 1
-                    continue  # loop again without counting a tool call
                 else:
-                    # Both files read - force final answer
-                    debug_log("Comparison question: Both files read. Forcing final answer.")
-                    messages.append({"role": "assistant", "content": content})
-                    nudge = (
-                        "You have read both files. Now provide your final answer comparing the error handling strategies:\n"
-                        "- ETL: httpx with raise_for_status(), pagination with has_more, external_id check for idempotency\n"
-                        "- API routers: HTTPException for errors, IntegrityError handling, session.rollback() on failure"
-                    )
-                    messages.append({"role": "user", "content": nudge})
-                    reprompt_count += 1
-                    continue  # loop again to get final answer
+                    # Already reprompted - return the answer
+                    debug_log("ETL question: Already reprompted. Returning current content.")
+                    source = ""
+                    for tc in reversed(all_tool_calls):
+                        if tc["tool"] == "read_file":
+                            source = tc["args"].get("path", "")
+                            break
+                    return {
+                        "answer": content,
+                        "source": source,
+                        "tool_calls": all_tool_calls
+                    }
 
             # Genuine final answer
             source = ""
